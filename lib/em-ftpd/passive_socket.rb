@@ -8,8 +8,8 @@ module EM::FTPD
     include BaseSocket
     
 
-    def self.start(host, control_server)
-      EventMachine.start_server(host, 0, self) do |conn|
+    def self.start(host, control_server, ssl_config)
+      EventMachine.start_server(host, 0, self, ssl_config) do |conn|
         control_server.datasocket = conn
       end
     end

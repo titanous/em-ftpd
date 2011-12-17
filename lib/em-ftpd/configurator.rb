@@ -5,15 +5,20 @@ module EM::FTPD
   class Configurator
 
     def initialize
-      @user      = nil
-      @group     = nil
-      @daemonise = false
-      @name      = nil
-      @pid_file  = nil
-      @port      = 21
+      @user             = nil
+      @group            = nil
+      @daemonise        = false
+      @name             = nil
+      @pid_file         = nil
+      @port             = 21
 
-      @driver    = nil
-      @driver_args = []
+      @driver           = nil
+      @driver_args      = []
+
+      @enforce_tls        = false
+      @enforce_data_tls   = false
+      @private_key_file = nil
+      @cert_chain_file  = nil
     end
 
     def user(val = nil)
@@ -56,8 +61,8 @@ module EM::FTPD
 
 
     def daemonise(val = nil)
-      if val
-        @daemonise = val
+      if !val.nil?
+        @daemonise = !!val
       else
         @daemonise
       end
@@ -103,9 +108,56 @@ module EM::FTPD
       end
     end
 
+    def enforce_tls(val = nil)
+      if !val.nil?
+        @enforce_tls = !!val
+      else
+        @enforce_tls
+      end
+    end
+
+    def enforce_data_tls(val = nil)
+      if !val.nil?
+        @enforce_data_tls = !!val
+      else
+        @enforce_data_tls
+      end
+    end
+
+    def private_key_file(val = nil)
+      if val
+        @private_key_file = val
+      else
+        @private_key_file
+      end
+    end
+
+    def cert_chain_file(val = nil)
+      if val
+        @cert_chain_file = val
+      else
+        @cert_chain_file
+      end
+    end
+
     def check!
       if @driver.nil?
         die("driver MUST be specified in the config file")
+      end
+      if (@enforce_tls || @enforce_data_tls) && (@private_key_file.nil? || @cert_chain_file.nil?)
+        die("private_key_file and cert_chain_file MUST be specified when enabling enforce_tls or enforce_data_tls")
+      end
+      if @private_key_file && !File.readable?(@private_key_file)
+        die("private_key_file #{@private_key_file} not readable")
+      end
+      if @cert_chain_file && !File.readable?(@cert_chain_file)
+        die("cert_chain_file #{@cert_chain_file} not readable")
+      end
+      if (@private_key_file && !@cert_chain_file) || (!@private_key_file && @cert_chain_file)
+        die("private_key_file and cert_chain_file must be both speficied")
+      end
+      if (@private_key_file && !EM.ssl?)
+        die("Your EventMachine does not support SSL/TLS. Please install open_ssl and try again.")
       end
     end
 
