@@ -6,11 +6,11 @@ module EM::FTPD
   # This module must be included into EM::FTPD::Server AFTER the other modules have been included
   module Security
 
-    def initialize
-      super
+    def initialize(*args)
+      super if defined?(super)
       @command_channel_secure = false
       @client_wants_secure_data_channel = false
-      @config ||= Configurator.new
+      @has_pbsz = false
     end
 
     def ssl_config
@@ -25,9 +25,9 @@ module EM::FTPD
     end
 
     def valid_ssl_config?
-      EM.ssl? && 
-        @config.private_key_file && File.readable?(@config.private_key_file) && 
-        @config.cert_chain_file && File.readable?(@config.cert_chain_file)
+      !!(EM.ssl? && 
+              @config.private_key_file && File.readable?(@config.private_key_file) && 
+              @config.cert_chain_file && File.readable?(@config.cert_chain_file))
     end
 
     #
@@ -80,7 +80,7 @@ module EM::FTPD
 
     def cmd_prot(param)
       send_param_required and return if param.nil?
-      send_response("503 PROT needs AUTH TLS and PBSZ first") and return if !command_channel_secure? || !@has_pbsz
+      send_response("503 PROT needs AUTH TLS and PBSZ first") and return unless command_channel_secure? && @has_pbsz
       if %w(C P).include? param.upcase
         @client_wants_secure_data_channel = param.upcase == "P"
         send_response "200 #{@client_wants_secure_data_channel ? 'private' : 'clear text'} data channel protection selected"
