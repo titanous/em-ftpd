@@ -94,13 +94,16 @@ module EM::FTPD
       end
     end
 
+    # save a file from a client directly using a datasocket
+    # changed the response code to 226 to improve compatibility with the standard FTP protocol (STOR)
+
     def cmd_stor_streamed(target_path)
       wait_for_datasocket do |datasocket|
         if datasocket
           send_response "150 Data transfer starting"
           @driver.put_file_streamed(target_path, datasocket) do |bytes|
             if bytes
-              send_response "200 OK, received #{bytes} bytes"
+              send_response "226 OK, received #{bytes} bytes"
             else
               send_action_not_taken
             end
@@ -110,6 +113,10 @@ module EM::FTPD
         end
       end
     end
+
+    # save a file from a client, using a temporal file received via socket
+    # changed the response code to 226 to improve compatibility with the standard FTP protocol (STOR)
+    # added forced closing of the datasocket
 
     def cmd_stor_tempfile(target_path)
       tmpfile = Tempfile.new("em-ftp")
@@ -125,12 +132,13 @@ module EM::FTPD
           tmpfile.flush
           @driver.put_file(target_path, tmpfile.path) do |bytes|
             if bytes
-              send_response "200 OK, received #{bytes} bytes"
+              send_response "226 OK, received #{bytes} bytes"
             else
               send_action_not_taken
             end
           end
           tmpfile.unlink
+          close_datasocket # force closing the datasocket
         }
         datasocket.errback {
           tmpfile.unlink
