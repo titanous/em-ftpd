@@ -11,6 +11,10 @@ module EM::FTPD
       @user.nil? ? false : true
     end
 
+    def current_user
+      @user
+    end
+
     # handle the USER FTP command. This is a user attempting to login.
     # we simply store the requested user name as an instance variable
     # and wait for the password to be submitted before doing anything

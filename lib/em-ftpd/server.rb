@@ -28,7 +28,7 @@ module EM::FTPD
 
     def initialize(driver, driver_args = [], config = Configurator.new)
       if driver.is_a?(Class)
-        @driver   = driver.new *driver_args
+        @driver   = driver.new *driver_args.unshift(self)
       else
         @driver   = driver
       end
