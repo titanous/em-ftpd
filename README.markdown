@@ -41,14 +41,18 @@ Run your server like so:
 
 Valid options for the config file are:
 
-* user        [name of system user to run the process as]
-* group       [name of group to run the process as]
-* daemonise   [true/false]
-* name        [a string to include in the process description]
-* pid_file    [a path to save the pid to. Useful in conjunction with daemonise]
-* port        [the TCP port to bind to. Defaults to 21]
-* driver      [the class that connects to the persistance layer]
-* driver_args [any arguments that need to be passed to the driver constructor]
+* user             [name of system user to run the process as]
+* group            [name of group to run the process as]
+* daemonise        [true/false]
+* name             [a string to include in the process description]
+* pid_file         [a path to save the pid to. Useful in conjunction with daemonise]
+* port             [the TCP port to bind to. Defaults to 21]
+* driver           [the class that connects to the persistance layer]
+* driver_args      [array of any arguments that need to be passed to the driver constructor]
+* private_key_file [the path to the private ssl key. This config is needed if you want AUTH TLS to work.]
+* cert_chain_file  [the path to the certificate chain file. This config is needed if you want AUTH TLS to work.]
+* enforce_tls      [true/false. True if the user needs to use AUTH TLS before logging in. If you set this to true private_key_file and cert_chain_file must be set also.]
+* enforce_data_tls [true/false. True if server should enforce encrypted data channels. If you set this to true private_key_file and cert_chain_file must be set also.]
 
 ## The Driver Contract
 

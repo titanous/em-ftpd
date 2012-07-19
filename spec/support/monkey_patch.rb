@@ -43,7 +43,7 @@ end
 
 class EM::FTPD::PassiveSocket
   class << self
-    def start(host, control_server)
+    def start(host, control_server, ssl_config)
       control_server.datasocket = self.new(nil)
       @@control_server = control_server
       "12345"

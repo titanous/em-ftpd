@@ -6,8 +6,8 @@ module EM::FTPD
     include EM::Deferrable
     include BaseSocket
 
-    def self.open(host, port)
-      EventMachine.connect(host, port, self)
+    def self.open(host, port, ssl_config)
+      EventMachine.connect(host, port, self, ssl_config)
     end
 
   end

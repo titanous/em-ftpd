@@ -10,35 +10,41 @@ module EM::FTPD
     LBRK = "\r\n"
 
     include EM::Protocols::LineProtocol
+    include StandardResponses
     include Authentication
     include Directories
     include Files
+    include DataSockets
+    include Security
 
     COMMANDS = %w[quit type user retr stor eprt port cdup cwd dele rmd pwd
                   list size syst mkd pass xcup xpwd xcwd xrmd rest allo nlst
                   pasv epsv help noop mode rnfr rnto stru feat]
 
+    COMMANDS.concat %w(auth pbsz prot) if EM.ssl?
+
     attr_reader :root, :name_prefix
     attr_accessor :datasocket
 
-    def initialize(driver, *args)
-      if driver.is_a?(Class) && args.empty?
-        @driver = driver.new
-      elsif driver.is_a?(Class)
-        @driver = driver.new *args
+    def initialize(driver, driver_args = [], config = Configurator.new)
+      if driver.is_a?(Class)
+        @driver   = driver.new *driver_args
       else
-        @driver = driver
+        @driver   = driver
       end
-      @datasocket = nil
-      @listen_sig = nil
+      @config     = config
       super()
     end
 
     def post_init
-      @mode   = :binary
+      @mode        = :binary
       @name_prefix = "/"
 
-      send_response "220 FTP server (em-ftpd) ready"
+      if @config.name
+        send_response "220 FTP server (em-ftpd/#{@config.name}) ready"
+      else
+        send_response "220 FTP server (em-ftpd) ready"
+      end
     end
 
     def receive_line(str)
@@ -53,6 +59,8 @@ module EM::FTPD
         rescue Exception => err
           puts "#{err.class}: #{err}"
           puts err.backtrace.join("\n")
+          close_datasocket
+          close_connection_after_writing
         end
       else
         send_response "500 Sorry, I don't understand #{cmd.upcase}"
@@ -88,19 +96,6 @@ module EM::FTPD
       [cmd.downcase, param]
     end
 
-    def close_datasocket
-      if @datasocket
-        @datasocket.close_connection_after_writing
-        @datasocket = nil
-      end
-
-      # stop listening for data socket connections, we have one
-      if @listen_sig
-        PassiveSocket.stop(@listen_sig)
-        @listen_sig = nil
-      end
-    end
-
     def cmd_allo(param)
       send_response "202 Obsolete"
     end
@@ -119,7 +114,7 @@ module EM::FTPD
 
     def cmd_feat(param)
       str = "211- Supported features:#{LBRK}"
-      features = %w{ EPRT EPSV SIZE }
+      features = ["EPRT", "EPSV", "SIZE", "AUTH TLS", "PBSZ", "PROT" ]
       features.each do |feat|
         str << " #{feat}" << LBRK
       end
@@ -149,75 +144,7 @@ module EM::FTPD
       send_response "200"
     end
 
-    # Passive FTP. At the clients request, listen on a port for an incoming
-    # data connection. The listening socket is opened on a random port, so
-    # the host and port is sent back to the client on the control socket.
-    #
-    def cmd_pasv(param)
-      send_unauthorised and return unless logged_in?
-
-      host, port = start_passive_socket
-
-      p1, p2 = *port.divmod(256)
-
-      send_response "227 Entering Passive Mode (" + host.split(".").join(",") + ",#{p1},#{p2})"
-    end
-
-    # listen on a port, see RFC 2428
-    #
-    def cmd_epsv(param)
-      host, port = start_passive_socket
-
-      send_response "229 Entering Extended Passive Mode (|||#{port}|)"
-    end
-
-    # Active FTP. An alternative to Passive FTP. The client has a listening socket
-    # open, waiting for us to connect and establish a data socket. Attempt to
-    # open a connection to the host and port they specify and save the connection,
-    # ready for either end to send something down it.
-    def cmd_port(param)
-      send_unauthorised and return unless logged_in?
-      send_param_required and return if param.nil?
-
-      nums = param.split(',')
-      port = nums[4].to_i * 256 + nums[5].to_i
-      host = nums[0..3].join('.')
-      close_datasocket
-
-      puts "connecting to client #{host} on #{port}"
-      @datasocket = ActiveSocket.open(host, port)
-
-      puts "Opened active connection at #{host}:#{port}"
-      send_response "200 Connection established (#{port})"
-    rescue
-      puts "Error opening data connection to #{host}:#{port}"
-      send_response "425 Data connection failed"
-    end
-
-    # Active FTP.
-    #
-    def cmd_eprt(param)
-      send_unauthorised and return unless logged_in?
-      send_param_required and return if param.nil?
-
-      delim = param[0,1]
-      m, af, host, port = *param.match(/#{delim}(.+?)#{delim}(.+?)#{delim}(.+?)#{delim}/)
-      port = port.to_i
-      close_datasocket
-
-      if af.to_i != 1 && ad.to_i != 2
-        send_response "522 Network protocol not supported, use (1,2)"
-      else
-        debug "connecting to client #{host} on #{port}"
-        @datasocket = FTPActiveDataSocket.open(host, port)
-
-        puts "Opened active connection at #{host}:#{port}"
-        send_response "200 Connection established (#{port})"
-      end
-    rescue
-      warn "Error opening data connection to #{host}:#{port}"
-      send_response "425 Data connection failed"
-    end
+    
 
     # handle the QUIT FTP command by closing the connection
     def cmd_quit(param)
@@ -269,142 +196,11 @@ module EM::FTPD
       end
     end
 
-    # send data to the client across the data socket.
-    #
-    # The data socket is NOT guaranteed to be setup by the time this method runs.
-    # If it isn't ready yet, exit the method and try again on the next reactor
-    # tick. This is particularly likely with some clients that operate in passive
-    # mode. They get a message on the control port with the data port details, so
-    # they start up a new data connection AND send they command that will use it
-    # in close succession.
-    #
-    # The data port setup needs to complete a TCP handshake before it will be
-    # ready to use, so it may take a few RTTs after the command is received at
-    # the server before the data socket is ready.
-    #
-    def send_outofband_data(data)
-      wait_for_datasocket do |datasocket|
-        if datasocket.nil?
-          send_response "425 Error establishing connection"
-        else
-          if data.is_a?(Array)
-            data = data.join(LBRK) << LBRK
-          end
-          data = StringIO.new(data) if data.kind_of?(String)
-
-
-          if EM.reactor_running?
-            # send the data out in chunks, as fast as the client can recieve it -- not blocking the reactor in the process
-            streamer = IOStreamer.new(datasocket, data)
-            finalize = Proc.new {
-              close_datasocket
-              data.close if data.respond_to?(:close) && !data.closed?
-            }
-            streamer.callback {
-              send_response "226 Closing data connection, sent #{streamer.bytes_streamed} bytes"
-              finalize.call
-            }
-            streamer.errback { |ex|
-              send_response "425 Error while streaming data, sent #{streamer.bytes_streamed} bytes"
-              finalize.call
-              raise ex
-            }
-          else
-            # blocks until all data is sent
-            begin
-              bytes = 0
-              data.each do |line|
-                datasocket.send_data(line)
-                bytes += line.bytesize
-              end
-              send_response "226 Closing data connection, sent #{bytes} bytes"
-            ensure
-              close_datasocket
-              data.close if data.respond_to?(:close)
-            end
-          end
-        end
-      end
-    end
-
-    # waits for the data socket to be established
-    def wait_for_datasocket(interval = 0.1, &block)
-      if @datasocket.nil? && interval < 25
-        if EM.reactor_running?
-          EventMachine.add_timer(interval) { wait_for_datasocket(interval * 2, &block) }
-        else
-          sleep interval
-          wait_for_datasocket(interval * 2, &block)
-        end
-        return
-      end
-      yield @datasocket
-    end
-
-    # receive a file data from the client across the data socket.
-    #
-    # The data socket is NOT guaranteed to be setup by the time this method runs.
-    # If this happens, exit the method early and try again later. See the method
-    # comments to send_outofband_data for further explanation.
-    #
-    def receive_outofband_data(&block)
-      wait_for_datasocket do |datasocket|
-        if datasocket.nil?
-          send_response "425 Error establishing connection"
-          yield false
-        else
-
-          # let the client know we're ready to start
-          send_response "150 Data transfer starting"
-
-          datasocket.callback do |data|
-            block.call(data)
-          end
-        end
-      end
-    end
-
-    def start_passive_socket
-      # close any existing data socket
-      close_datasocket
-
-      # grab the host/address the current connection is
-      # operating on
-      host = Socket.unpack_sockaddr_in( self.get_sockname ).last
-
-      # open a listening socket on the appropriate host
-      # and on a random port
-      @listen_sig = PassiveSocket.start(host, self)
-      port = PassiveSocket.get_port(@listen_sig)
-
-      [host, port]
-    end
-
     # all responses from an FTP server end with \r\n, so wrap the
     # send_data callback
     def send_response(msg, no_linebreak = false)
       msg += LBRK unless no_linebreak
       send_data msg
-    end
-
-    def send_param_required
-      send_response "553 action aborted, required param missing"
-    end
-
-    def send_permission_denied
-      send_response "550 Permission denied"
-    end
-
-    def send_action_not_taken
-      send_response "550 Action not taken"
-    end
-
-    def send_illegal_params
-      send_response "553 action aborted, illegal params"
-    end
-
-    def send_unauthorised
-      send_response "530 Not logged in"
     end
 
   end
